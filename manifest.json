@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Dopes Gatekeeper",
+  "version": "1.0",
+  "description": "A Chrome extension to limit time spent on websites and show rest overlays.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Dopes Gatekeeper"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["png/dopes_1.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dopes Gatekeeper</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #1b1b1f;
+      --card: #232329;
+      --border: #34343c;
+      --text: #f2f2f5;
+      --text-dim: #9a9aa5;
+      --accent: #7c9eff;
+      --ok: #4cc38a;
+      --warn: #e8b339;
+      --danger: #e5636a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 240px;
+      margin: 0;
+      padding: 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    header img {
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
+      border-radius: 6px;
+    }
+
+    header h1 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--text-dim);
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 12px;
+      text-align: center;
+    }
+
+    #countdown {
+      font-size: 34px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+    }
+
+    #countdown.warn { color: var(--warn); }
+    #countdown.danger { color: var(--danger); }
+
+    #status-label {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    #reset {
+      width: 100%;
+      margin-top: 12px;
+      padding: 9px 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    #reset:hover {
+      background: var(--card);
+    }
+
+    #reset .primary {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    #reset .secondary {
+      display: block;
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="png/dopes_1.png" alt="Dopes the cat">
+    <h1>Dopes Gatekeeper</h1>
+  </header>
+  <div class="card">
+    <div id="countdown">--:--</div>
+    <div id="status-label"></div>
+  </div>
+  <button id="reset">
+    <span class="primary">Reset Timer</span>
+    <span class="secondary">because i hate dopes</span>
+  </button>
+  <script src="popup.js"></script>
+</body>
+</html>
