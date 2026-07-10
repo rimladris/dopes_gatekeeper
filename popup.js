@@ -1,4 +1,9 @@
 // popup.js
+//
+// Storage writes are batched in the background worker, so storage is stale by
+// up to 15s. Poll getStatus instead: it reads the worker's live in-memory
+// counters, and the polling itself keeps the worker awake while the popup is
+// open.
 
 function formatCountdown(seconds) {
   const total = Math.max(Math.ceil(seconds), 0);
@@ -12,25 +17,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusLabelEl = document.getElementById('status-label');
   const resetBtn = document.getElementById('reset');
 
-  let allowance = 0;
-  let timeSpent = 0;
-  let restUntil = 0;
-
-  function render() {
-    const remainingMs = restUntil - Date.now();
-    const isResting = remainingMs > 0;
+  function render(status) {
+    const { timeSpent = 0, allowance = 0, restRemainingMs = 0 } = status;
 
     countdownEl.classList.remove('warn', 'danger');
 
-    if (isResting) {
-      countdownEl.textContent = formatCountdown(remainingMs / 1000);
+    if (restRemainingMs > 0) {
+      countdownEl.textContent = formatCountdown(restRemainingMs / 1000);
       countdownEl.classList.add('danger');
       statusLabelEl.textContent = 'resting - dopes has the wheel';
       return;
     }
 
-    const remaining = allowance - timeSpent;
-    countdownEl.textContent = formatCountdown(remaining);
+    countdownEl.textContent = formatCountdown(allowance - timeSpent);
     if (allowance > 0) {
       const ratio = timeSpent / allowance;
       if (ratio >= 0.9) countdownEl.classList.add('danger');
@@ -39,33 +38,17 @@ document.addEventListener('DOMContentLoaded', () => {
     statusLabelEl.textContent = 'time left before rest';
   }
 
-  function fetchConfig() {
+  function poll() {
     chrome.runtime.sendMessage({ action: 'getStatus' }, (response) => {
-      allowance = (response && response.allowance) || 0;
-      render();
+      if (response) render(response);
     });
   }
 
-  fetchConfig();
-
-  chrome.storage.local.get(['timeSpent', 'restUntil'], (result) => {
-    timeSpent = result.timeSpent || 0;
-    restUntil = result.restUntil || 0;
-    render();
-  });
-
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== 'local') return;
-    if (changes.timeSpent) timeSpent = changes.timeSpent.newValue || 0;
-    if (changes.restUntil) restUntil = changes.restUntil.newValue || 0;
-    if (changes.mode) fetchConfig();
-    if (changes.timeSpent || changes.restUntil) render();
-  });
-
-  const tickId = setInterval(render, 250);
-  window.addEventListener('unload', () => clearInterval(tickId));
+  poll();
+  const pollId = setInterval(poll, 500);
+  window.addEventListener('unload', () => clearInterval(pollId));
 
   resetBtn.addEventListener('click', () => {
-    chrome.storage.local.set({ timeSpent: 0 });
+    chrome.runtime.sendMessage({ action: 'resetTimer' }, poll);
   });
 });

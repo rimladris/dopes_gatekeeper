@@ -2,7 +2,7 @@
 
 Dopes is a professional asskicker. You should stop watching videos and get some work done, says Dopes.
 
-A Chrome extension that tracks how much time you spend on YouTube, Twitch, Instagram, etc. (combined, under one shared allowance) and blocks those sites with a rest overlay once you hit the limit.
+A Chrome extension that tracks how much time you spend watching videos on YouTube, Twitch, Instagram, etc. (combined, under one shared allowance) and blocks those sites with a rest overlay once you hit the limit. Only video you can actually see counts: a video playing on another monitor counts, a video playing in a background tab doesn't.
 
 Don't just hit reset timer, that makes you a Dopes hater.
 

@@ -1,50 +1,14 @@
 // background.js - Service Worker for Dopes Gatekeeper
+//
+// Content scripts on tracked domains decide whether a watchable video is
+// playing (visible tab or picture-in-picture) and push one 'videoTick'
+// message per second of playback. This worker just counts those seconds
+// against the shared allowance and enforces the rest period. The push model
+// also means every counted second wakes the service worker, so tracking
+// survives MV3 worker suspension.
 
-let activeTabId = null;
-let windowFocused = true;
-let timeSpent = 0; // seconds, shared across all tracked domains
-let restUntil = 0; // timestamp (ms) until which ALL tracked domains are resting
-
-// Load timeSpent and restUntil from storage
-chrome.storage.local.get(['timeSpent', 'restUntil'], (result) => {
-  timeSpent = result.timeSpent || 0;
-  restUntil = result.restUntil || 0;
-});
-
-// Recover current window focus state (module state is lost whenever the
-// MV3 service worker is suspended and restarted)
-chrome.windows.getLastFocused({}, (win) => {
-  windowFocused = !!win && win.focused;
-});
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  windowFocused = windowId !== chrome.windows.WINDOW_ID_NONE;
-});
-
-// content_scripts only auto-inject on navigation, so tabs that were already
-// open before the extension was installed/reloaded never get content.js.
-// Inject it into them manually so tracking works without a manual refresh.
-async function injectIntoExistingTabs() {
-  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
-  for (const tab of tabs) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-    } catch (err) {
-      // Page not injectable (e.g. Chrome Web Store) - ignore
-    }
-  }
-}
-chrome.runtime.onInstalled.addListener(injectIntoExistingTabs);
-chrome.runtime.onStartup.addListener(injectIntoExistingTabs);
-
-// Tracked domains and their display names (used by the popup for readability)
-const DOMAIN_LABELS = {
-  'youtube.com': 'YouTube',
-  'twitch.tv': 'Twitch',
-  'instagram.com': 'Instagram',
-  'iyf.tv': 'iYF',
-  'bilibili.com': 'Bilibili'
-};
-const TRACKED_DOMAINS = Object.keys(DOMAIN_LABELS);
+const TRACKED_DOMAINS = ['youtube.com', 'twitch.tv', 'instagram.com', 'iyf.tv', 'bilibili.com'];
+const TRACKED_URL_PATTERNS = TRACKED_DOMAINS.map((d) => `*://*.${d}/*`);
 
 // Allowance/break presets, shared across all tracked domains
 const MODES = {
@@ -52,17 +16,42 @@ const MODES = {
   extended: { allowance: 45 * 60, restTime: 15 * 60 }
 };
 
+let timeSpent = 0; // seconds watched, shared across all tracked domains
+let restUntil = 0; // timestamp (ms) until which ALL tracked domains are resting
 let mode = 'standard';
-chrome.storage.local.get(['mode'], (result) => {
-  mode = MODES[result.mode] ? result.mode : 'standard';
-});
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'local' && changes.mode) {
-    mode = MODES[changes.mode.newValue] ? changes.mode.newValue : 'standard';
-  }
+let lastTickMs = 0; // dedupes ticks from multiple tabs within the same second
+
+// Module state is lost whenever the MV3 worker is suspended and restarted;
+// handlers await this so a tick arriving right after a restart can't count
+// against uninitialized state.
+const stateReady = new Promise((resolve) => {
+  chrome.storage.local.get(['timeSpent', 'restUntil', 'mode'], (result) => {
+    timeSpent = result.timeSpent || 0;
+    restUntil = result.restUntil || 0;
+    mode = MODES[result.mode] ? result.mode : 'standard';
+    resolve();
+  });
 });
 
-const INPUT_IDLE_MS = 60000; // stop counting plain browsing after this long without input
+// This worker is the only writer of timeSpent/restUntil, so only mode (written
+// by the options page) needs syncing back in.
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (changes.mode) mode = MODES[changes.mode.newValue] ? changes.mode.newValue : 'standard';
+});
+
+// Persisting every counted second would mean one disk write per second of
+// playback. Batch instead: write at most every 15s, plus forced flushes at
+// the moments that matter (rest trigger, reset, worker shutdown). Worst case
+// on an unclean worker death is losing ~14s of counted time.
+let lastFlushMs = 0;
+function flushState(force = false) {
+  const now = Date.now();
+  if (!force && now - lastFlushMs < 15000) return;
+  lastFlushMs = now;
+  chrome.storage.local.set({ timeSpent, restUntil });
+}
+chrome.runtime.onSuspend.addListener(() => flushState(true));
 
 // Function to get domain from URL
 function getDomain(url) {
@@ -84,6 +73,34 @@ function normalizeDomain(hostname) {
   return null;
 }
 
+// The manifest only auto-injects into frames whose own URL is on a tracked
+// domain. Cross-origin player iframes inside tracked tabs (and tracked tabs
+// already open when the extension loads) are covered by manual injection;
+// the content script's injection guard makes overlap a no-op.
+function injectIntoTab(tabId) {
+  chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content.js'] })
+    .catch(() => {
+      // Page not injectable (e.g. Chrome Web Store) - ignore
+    });
+}
+
+async function injectIntoExistingTabs() {
+  const tabs = await chrome.tabs.query({ url: TRACKED_URL_PATTERNS });
+  for (const tab of tabs) {
+    injectIntoTab(tab.id);
+  }
+}
+chrome.runtime.onInstalled.addListener(injectIntoExistingTabs);
+chrome.runtime.onStartup.addListener(injectIntoExistingTabs);
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // 'complete' catches iframes present at load; an 'audible' flip catches
+  // player iframes mounted later that started making sound
+  const relevant = changeInfo.status === 'complete' || changeInfo.audible === true;
+  if (!relevant || !tab.url || !normalizeDomain(getDomain(tab.url))) return;
+  injectIntoTab(tabId);
+});
+
 // Function to trigger rest - blocks ALL tracked domains (all tabs, incl. refreshes) for restTime,
 // since they share a single allowance.
 function triggerRest() {
@@ -91,85 +108,80 @@ function triggerRest() {
 
   const restTime = MODES[mode].restTime;
   restUntil = Date.now() + restTime * 1000;
-  chrome.storage.local.set({ restUntil });
+  timeSpent = 0;
+  flushState(true);
 
   // Show the overlay on every open tab currently on any tracked domain
-  chrome.tabs.query({}, (tabs) => {
+  chrome.tabs.query({ url: TRACKED_URL_PATTERNS }, (tabs) => {
     for (const tab of tabs) {
-      if (normalizeDomain(getDomain(tab.url))) {
-        chrome.tabs.sendMessage(tab.id, { action: 'showOverlay', restTime })
-          .catch((err) => console.log('Could not deliver overlay message:', err));
-      }
+      chrome.tabs.sendMessage(tab.id, { action: 'showOverlay', restTime })
+        .catch((err) => console.log('Could not deliver overlay message:', err));
     }
   });
-
-  // Reset timer
-  timeSpent = 0;
-  chrome.storage.local.set({ timeSpent });
 }
 
-// Content scripts ask this on load (covers refreshes and new tabs) to find out
-// whether the shared allowance is currently resting, and if so for how much longer.
+// One second of watchable video playback, reported by a tracked tab
+async function handleVideoTick(sender) {
+  await stateReady;
+  if (!sender.tab || !sender.tab.url) return;
+  if (!normalizeDomain(getDomain(sender.tab.url))) return; // only tracked domains count
+  if (restUntil > Date.now()) return; // already resting
+
+  const now = Date.now();
+  if (now - lastTickMs < 900) return; // several tabs may tick in the same second
+  lastTickMs = now;
+
+  timeSpent += 1;
+  if (timeSpent >= MODES[mode].allowance) {
+    triggerRest();
+  } else {
+    flushState();
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'checkResting' && sender.tab && sender.tab.url) {
-    const domain = normalizeDomain(getDomain(sender.tab.url));
-    const remainingMs = domain ? restUntil - Date.now() : 0;
-    if (domain && restUntil && remainingMs <= 0) {
-      restUntil = 0;
-      chrome.storage.local.set({ restUntil });
-    }
-    sendResponse({ restRemainingMs: Math.max(remainingMs, 0) });
-  } else if (message.action === 'getStatus') {
-    const remainingMs = restUntil - Date.now();
-    sendResponse({
-      timeSpent,
-      allowance: MODES[mode].allowance,
-      domains: TRACKED_DOMAINS,
-      domainLabels: DOMAIN_LABELS,
-      restRemainingMs: remainingMs > 0 ? remainingMs : 0,
-      mode
-    });
+  if (message.action === 'videoTick') {
+    handleVideoTick(sender);
+    return;
   }
-});
 
-// Listen to tab activation
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  activeTabId = activeInfo.tabId;
-});
-
-// Listen to tab removal
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === activeTabId) {
-    activeTabId = null;
+  // Content scripts ask this on load (covers refreshes and new tabs) to find
+  // out whether their domain is tracked and currently resting.
+  if (message.action === 'checkResting') {
+    (async () => {
+      await stateReady;
+      const domain = sender.tab && sender.tab.url ? normalizeDomain(getDomain(sender.tab.url)) : null;
+      const remainingMs = domain ? restUntil - Date.now() : 0;
+      if (domain && restUntil && remainingMs <= 0) {
+        restUntil = 0;
+        flushState(true);
+      }
+      sendResponse({ tracked: !!domain, restRemainingMs: Math.max(remainingMs, 0) });
+    })();
+    return true; // async sendResponse
   }
-});
 
-// Periodic engagement check every second. "Engaged" means either a video is
-// actively playing (cursor doesn't move while watching) or the user has
-// provided input recently (plain browsing/scrolling).
-setInterval(() => {
-  if (!activeTabId || !windowFocused) return;
-
-  chrome.tabs.get(activeTabId, (tab) => {
-    if (chrome.runtime.lastError || !tab || !tab.url) return;
-
-    const domain = normalizeDomain(getDomain(tab.url));
-    if (!domain) return;
-    if (restUntil > Date.now()) return; // already resting
-
-    chrome.tabs.sendMessage(activeTabId, { action: 'getEngagement' })
-      .then((response) => {
-        const engaged = response && (response.videoPlaying || response.idleMs < INPUT_IDLE_MS);
-        if (!engaged) return;
-
-        timeSpent += 1;
-        chrome.storage.local.set({ timeSpent });
-        if (timeSpent >= MODES[mode].allowance) {
-          triggerRest();
-        }
-      })
-      .catch(() => {
-        // No content script on this tab (e.g. chrome:// page) - nothing to measure
+  if (message.action === 'getStatus') {
+    (async () => {
+      await stateReady;
+      const remainingMs = restUntil - Date.now();
+      sendResponse({
+        timeSpent,
+        allowance: MODES[mode].allowance,
+        restRemainingMs: Math.max(remainingMs, 0),
+        mode
       });
-  });
-}, 1000);
+    })();
+    return true; // async sendResponse
+  }
+
+  if (message.action === 'resetTimer') {
+    (async () => {
+      await stateReady;
+      timeSpent = 0;
+      flushState(true);
+      sendResponse({});
+    })();
+    return true; // async sendResponse
+  }
+});
