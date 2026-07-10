@@ -98,9 +98,20 @@ chrome.runtime.sendMessage({ action: 'checkResting' })
     if (response.restRemainingMs > 0) {
       enterRest(response.restRemainingMs / 1000);
     }
-    setInterval(() => {
+    const tickerId = setInterval(() => {
+      // When the extension is reloaded, scripts already in open pages are
+      // orphaned: chrome.runtime.id becomes undefined and sendMessage throws
+      // synchronously. Go quiet - the newly injected script takes over.
+      if (!chrome.runtime?.id) {
+        clearInterval(tickerId);
+        return;
+      }
       if (!restActive && isWatchableVideoPlaying()) {
-        chrome.runtime.sendMessage({ action: 'videoTick' }).catch(() => {});
+        try {
+          chrome.runtime.sendMessage({ action: 'videoTick' }).catch(() => {});
+        } catch {
+          clearInterval(tickerId);
+        }
       }
     }, 1000);
   })
