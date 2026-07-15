@@ -6,7 +6,7 @@
 // open.
 
 function formatCountdown(seconds) {
-  const total = Math.max(Math.ceil(seconds), 0);
+  const total = Math.max(Math.ceil(Number(seconds) || 0), 0);
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;

@@ -6,13 +6,33 @@
 // validates the tab's domain. During a rest, every frame pauses its media,
 // but only the top frame draws the overlay.
 
-// Guard against double-injection (e.g. manifest injection on next navigation
-// racing with a one-time chrome.scripting.executeScript call into a tab that
-// was already open when the extension loaded)
-if (window.__dopesGatekeeperInjected) {
-  // no-op: already running in this document
-} else {
-window.__dopesGatekeeperInjected = true;
+// Injection guard. A plain boolean flag is not enough: the isolated world
+// (and its window vars) can survive an extension reload, so a stale flag from
+// an orphaned script would permanently block the fresh injection and leave
+// the tab untracked with no overlay listener. Instead, a live instance
+// refreshes a heartbeat timestamp every second (and stops when orphaned);
+// a new injection only backs off while someone else's heartbeat is fresh,
+// retrying briefly so it can take over from a just-orphaned script.
+(() => {
+const GUARD = '__dopesGatekeeperBeat';
+let claimAttempts = 0;
+
+function claimOrRetry() {
+  const beat = window[GUARD];
+  if (typeof beat === 'number' && Date.now() - beat < 2500) {
+    if (++claimAttempts <= 5) setTimeout(claimOrRetry, 3000);
+    return; // another live instance owns this frame
+  }
+  window[GUARD] = Date.now();
+  const beatId = setInterval(() => {
+    if (!chrome.runtime?.id) {
+      clearInterval(beatId); // orphaned: stop claiming so a successor can take over
+      return;
+    }
+    window[GUARD] = Date.now();
+  }, 1000);
+  init();
+}
 
 const isTopFrame = window === window.top;
 let restActive = false;
@@ -80,42 +100,52 @@ function isWatchableVideoPlaying() {
   return shadowVideos.some(isWatchable);
 }
 
-// Listen for messages from background
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.action === 'showOverlay') {
-    enterRest(message.restTime);
-  }
-});
-
-// On load, ask the background whether this domain is tracked and whether a
-// rest is in progress (covers refreshes and new tabs during a rest). If
-// tracked, start reporting watch time: one message per second of watchable
-// playback. Pushing (rather than the background polling) means every counted
-// second wakes the MV3 service worker, so it can never sleep through playback.
-chrome.runtime.sendMessage({ action: 'checkResting' })
-  .then((response) => {
-    if (!response || !response.tracked) return;
-    if (response.restRemainingMs > 0) {
-      enterRest(response.restRemainingMs / 1000);
+function init() {
+  // Listen for messages from background
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.action === 'showOverlay') {
+      enterRest(message.restTime);
     }
-    const tickerId = setInterval(() => {
-      // When the extension is reloaded, scripts already in open pages are
-      // orphaned: chrome.runtime.id becomes undefined and sendMessage throws
-      // synchronously. Go quiet - the newly injected script takes over.
-      if (!chrome.runtime?.id) {
-        clearInterval(tickerId);
-        return;
+  });
+
+  // On load, ask the background whether this domain is tracked and whether a
+  // rest is in progress (covers refreshes and new tabs during a rest). If
+  // tracked, start reporting watch time: one message per second of watchable
+  // playback. Pushing (rather than the background polling) means every counted
+  // second wakes the MV3 service worker, so it can never sleep through playback.
+  chrome.runtime.sendMessage({ action: 'checkResting' })
+    .then((response) => {
+      if (!response || !response.tracked) return;
+      if (response.restRemainingMs > 0) {
+        enterRest(response.restRemainingMs / 1000);
       }
-      if (!restActive && isWatchableVideoPlaying()) {
-        try {
-          chrome.runtime.sendMessage({ action: 'videoTick' }).catch(() => {});
-        } catch {
+      const tickerId = setInterval(() => {
+        // When the extension is reloaded, scripts already in open pages are
+        // orphaned: chrome.runtime.id becomes undefined and sendMessage throws
+        // synchronously. Go quiet - the newly injected script takes over.
+        if (!chrome.runtime?.id) {
           clearInterval(tickerId);
+          return;
         }
-      }
-    }, 1000);
-  })
-  .catch(() => {});
+        if (!restActive && isWatchableVideoPlaying()) {
+          try {
+            chrome.runtime.sendMessage({ action: 'videoTick' })
+              .then((r) => {
+                // Self-heal: if a rest is active but this frame missed the
+                // showOverlay broadcast, the tick response says so
+                if (r && r.restRemainingMs > 0) {
+                  enterRest(r.restRemainingMs / 1000);
+                }
+              })
+              .catch(() => {});
+          } catch {
+            clearInterval(tickerId);
+          }
+        }
+      }, 1000);
+    })
+    .catch(() => {});
+}
 
 function pauseAllMedia() {
   collectMedia('video, audio').forEach((m) => {
@@ -212,4 +242,5 @@ function buildOverlay() {
   return overlay;
 }
 
-}
+claimOrRetry();
+})();

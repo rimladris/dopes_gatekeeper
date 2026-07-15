@@ -24,10 +24,15 @@ let lastTickMs = 0; // dedupes ticks from multiple tabs within the same second
 // Module state is lost whenever the MV3 worker is suspended and restarted;
 // handlers await this so a tick arriving right after a restart can't count
 // against uninitialized state.
+// Earlier versions stored these as per-domain objects; an object would turn
+// `timeSpent += 1` into string concatenation and the allowance check would
+// never fire, so accept nothing but finite numbers.
+const asNumber = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
 const stateReady = new Promise((resolve) => {
   chrome.storage.local.get(['timeSpent', 'restUntil', 'mode'], (result) => {
-    timeSpent = result.timeSpent || 0;
-    restUntil = result.restUntil || 0;
+    timeSpent = asNumber(result.timeSpent);
+    restUntil = asNumber(result.restUntil);
     mode = MODES[result.mode] ? result.mode : 'standard';
     resolve();
   });
@@ -120,29 +125,33 @@ function triggerRest() {
   });
 }
 
-// One second of watchable video playback, reported by a tracked tab
+// One second of watchable video playback, reported by a tracked tab.
+// Returns the remaining rest ms so the sender can self-heal a missed overlay.
 async function handleVideoTick(sender) {
   await stateReady;
-  if (!sender.tab || !sender.tab.url) return;
-  if (!normalizeDomain(getDomain(sender.tab.url))) return; // only tracked domains count
-  if (restUntil > Date.now()) return; // already resting
+  if (!sender.tab || !sender.tab.url) return 0;
+  if (!normalizeDomain(getDomain(sender.tab.url))) return 0; // only tracked domains count
 
   const now = Date.now();
-  if (now - lastTickMs < 900) return; // several tabs may tick in the same second
-  lastTickMs = now;
+  if (restUntil > now) return restUntil - now; // already resting
 
-  timeSpent += 1;
-  if (timeSpent >= MODES[mode].allowance) {
-    triggerRest();
-  } else {
-    flushState();
+  if (now - lastTickMs >= 900) { // several tabs may tick in the same second
+    lastTickMs = now;
+    timeSpent += 1;
+    if (timeSpent >= MODES[mode].allowance) {
+      triggerRest();
+    } else {
+      flushState();
+    }
   }
+
+  return restUntil > Date.now() ? restUntil - Date.now() : 0;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'videoTick') {
-    handleVideoTick(sender);
-    return;
+    handleVideoTick(sender).then((remainingMs) => sendResponse({ restRemainingMs: remainingMs }));
+    return true; // async sendResponse
   }
 
   // Content scripts ask this on load (covers refreshes and new tabs) to find
