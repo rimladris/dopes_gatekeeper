@@ -15,3 +15,7 @@ Don't just hit reset timer, that makes you a Dopes hater.
 5. Dopes is now watching. Click the extension icon in the toolbar to see your countdown.
 
 To get updates after pulling new changes, go back to `chrome://extensions` and click the reload icon on the Dopes Gatekeeper card.
+
+## Bring your own cat
+
+You can add your own cat photos to the `png/` folder, and Dopes will randomly show one of them when your time is up. Name them `dopes_1.png`, `dopes_2.png`, `dopes_3.png`, and so on — numbered consecutively with no gaps, since the extension counts up from 1 and stops at the first missing number. PNG format only. After adding photos, reload the extension in `chrome://extensions` so it picks them up. One photo works fine too; it'll just be that cat every time.

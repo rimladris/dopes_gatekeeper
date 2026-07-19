@@ -24,6 +24,24 @@ let lastTickMs = 0; // dedupes ticks from multiple tabs within the same second
 // Module state is lost whenever the MV3 worker is suspended and restarted;
 // handlers await this so a tick arriving right after a restart can't count
 // against uninitialized state.
+// Users can drop extra cat photos into png/ as dopes_1.png, dopes_2.png, ...
+// Extension packages can't be enumerated at runtime, so probe the numbered
+// names until the first gap and remember how many exist. The overlay picks
+// one at random from that count.
+const MAX_PHOTOS = 50;
+let photoCount = 1;
+const photosReady = (async () => {
+  for (let i = 1; i <= MAX_PHOTOS; i++) {
+    try {
+      const res = await fetch(chrome.runtime.getURL(`png/dopes_${i}.png`));
+      if (!res.ok) break;
+      photoCount = i;
+    } catch {
+      break;
+    }
+  }
+})();
+
 // Earlier versions stored these as per-domain objects; an object would turn
 // `timeSpent += 1` into string concatenation and the allowance check would
 // never fire, so accept nothing but finite numbers.
@@ -119,7 +137,7 @@ function triggerRest() {
   // Show the overlay on every open tab currently on any tracked domain
   chrome.tabs.query({ url: TRACKED_URL_PATTERNS }, (tabs) => {
     for (const tab of tabs) {
-      chrome.tabs.sendMessage(tab.id, { action: 'showOverlay', restTime })
+      chrome.tabs.sendMessage(tab.id, { action: 'showOverlay', restTime, photoCount })
         .catch((err) => console.log('Could not deliver overlay message:', err));
     }
   });
@@ -159,13 +177,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'checkResting') {
     (async () => {
       await stateReady;
+      await photosReady;
       const domain = sender.tab && sender.tab.url ? normalizeDomain(getDomain(sender.tab.url)) : null;
       const remainingMs = domain ? restUntil - Date.now() : 0;
       if (domain && restUntil && remainingMs <= 0) {
         restUntil = 0;
         flushState(true);
       }
-      sendResponse({ tracked: !!domain, restRemainingMs: Math.max(remainingMs, 0) });
+      sendResponse({ tracked: !!domain, restRemainingMs: Math.max(remainingMs, 0), photoCount });
     })();
     return true; // async sendResponse
   }
@@ -188,7 +207,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await stateReady;
       timeSpent = 0;
+      const wasResting = restUntil > Date.now();
+      restUntil = 0; // resetting also cancels an active rest
       flushState(true);
+      if (wasResting) {
+        chrome.tabs.query({ url: TRACKED_URL_PATTERNS }, (tabs) => {
+          for (const tab of tabs) {
+            chrome.tabs.sendMessage(tab.id, { action: 'clearOverlay' }).catch(() => {});
+          }
+        });
+      }
       sendResponse({});
     })();
     return true; // async sendResponse

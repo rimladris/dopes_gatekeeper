@@ -36,6 +36,7 @@ function claimOrRetry() {
 
 const isTopFrame = window === window.top;
 let restActive = false;
+let photoCount = 1; // how many png/dopes_N.png exist; reported by the background
 
 // Collect media elements including those inside (open) shadow roots, which
 // querySelectorAll alone doesn't reach
@@ -104,7 +105,10 @@ function init() {
   // Listen for messages from background
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'showOverlay') {
+      if (message.photoCount) photoCount = message.photoCount;
       enterRest(message.restTime);
+    } else if (message.action === 'clearOverlay') {
+      endRest(); // user reset the timer mid-rest
     }
   });
 
@@ -116,6 +120,7 @@ function init() {
   chrome.runtime.sendMessage({ action: 'checkResting' })
     .then((response) => {
       if (!response || !response.tracked) return;
+      if (response.photoCount) photoCount = response.photoCount;
       if (response.restRemainingMs > 0) {
         enterRest(response.restRemainingMs / 1000);
       }
@@ -158,7 +163,10 @@ function pauseAllMedia() {
 
 // Rest means rest: leave fullscreen (the overlay would render under a
 // fullscreen element), stop all playback, keep it stopped, and - in the top
-// frame - draw the blocking overlay.
+// frame - draw the blocking overlay. Ends on its own timer, or early via
+// endRest() when the user resets mid-rest.
+let restTeardown = null;
+
 function enterRest(restTimeSeconds) {
   if (restActive) return;
   restActive = true;
@@ -184,15 +192,22 @@ function enterRest(restTimeSeconds) {
     else document.addEventListener('DOMContentLoaded', mountOverlay, { once: true });
   }
 
-  setTimeout(() => {
+  const timeoutId = setTimeout(endRest, restTimeSeconds * 1000);
+  restTeardown = () => {
+    clearTimeout(timeoutId);
     restActive = false;
+    restTeardown = null;
     document.removeEventListener('play', keepPaused, true);
     if (overlay && overlay.parentNode) {
       overlay.parentNode.removeChild(overlay);
       document.body.style.pointerEvents = '';
       document.body.style.userSelect = '';
     }
-  }, restTimeSeconds * 1000);
+  };
+}
+
+function endRest() {
+  if (restTeardown) restTeardown();
 }
 
 function buildOverlay() {
@@ -212,9 +227,11 @@ function buildOverlay() {
   overlay.style.justifyContent = 'center';
   overlay.style.pointerEvents = 'auto';
 
-  // Create image element
+  // Show a random cat: uniform over dopes_1..dopes_N. With a single photo,
+  // Math.floor(Math.random() * 1) is always 0, so dopes_1 is always picked.
+  const photoIndex = 1 + Math.floor(Math.random() * Math.max(photoCount, 1));
   const img = document.createElement('img');
-  img.src = chrome.runtime.getURL('png/dopes_1.png');
+  img.src = chrome.runtime.getURL(`png/dopes_${photoIndex}.png`);
   img.style.maxWidth = '50%';
   img.style.maxHeight = '50%';
   img.style.objectFit = 'contain';

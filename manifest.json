@@ -33,7 +33,7 @@
   "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["png/dopes_1.png"],
+      "resources": ["png/*.png"],
       "matches": ["<all_urls>"]
     }
   ]
