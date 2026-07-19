@@ -51,4 +51,8 @@ document.addEventListener('DOMContentLoaded', () => {
   resetBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'resetTimer' }, poll);
   });
+
+  document.getElementById('settings').addEventListener('click', () => {
+    chrome.runtime.openOptionsPage();
+  });
 });
