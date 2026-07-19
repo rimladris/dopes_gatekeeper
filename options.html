@@ -103,8 +103,19 @@
       margin-top: 2px;
     }
 
-    .mode-option input {
+    .mode-option input[type="radio"] {
       accent-color: var(--accent);
+    }
+
+    .sub input[type="number"] {
+      width: 52px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 3px 6px;
+      font-size: 11px;
+      text-align: center;
     }
   </style>
 </head>
@@ -129,9 +140,19 @@
     </div>
     <input type="radio" name="mode" value="extended">
   </label>
+  <label class="mode-option" id="option-custom">
+    <div>
+      <div class="label">Custom</div>
+      <div class="sub">
+        <input type="number" id="custom-allowance" min="1" max="1440"> min allowance,
+        <input type="number" id="custom-rest" min="1" max="1440"> min break
+      </div>
+    </div>
+    <input type="radio" name="mode" value="custom">
+  </label>
 
   <div class="card">
-    Applies to YouTube, Twitch, and Instagram.
+    Applies to YouTube, Twitch, Instagram, iYF, and Bilibili &mdash; one shared allowance across all of them.
   </div>
 
   <script src="options.js"></script>

@@ -19,7 +19,20 @@ const MODES = {
 let timeSpent = 0; // seconds watched, shared across all tracked domains
 let restUntil = 0; // timestamp (ms) until which ALL tracked domains are resting
 let mode = 'standard';
+let customLimits = { allowance: 30 * 60, restTime: 10 * 60 };
 let lastTickMs = 0; // dedupes ticks from multiple tabs within the same second
+
+const validMode = (m) => (m === 'custom' || MODES[m] ? m : 'standard');
+
+// Options page stores custom values in minutes; clamp to 1 min - 24 h
+const minutesToSeconds = (v, fallbackMin) => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : fallbackMin;
+  return Math.min(Math.max(n, 1), 1440) * 60;
+};
+
+function activeLimits() {
+  return mode === 'custom' ? customLimits : MODES[mode];
+}
 
 // Module state is lost whenever the MV3 worker is suspended and restarted;
 // handlers await this so a tick arriving right after a restart can't count
@@ -48,19 +61,25 @@ const photosReady = (async () => {
 const asNumber = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
 const stateReady = new Promise((resolve) => {
-  chrome.storage.local.get(['timeSpent', 'restUntil', 'mode'], (result) => {
+  chrome.storage.local.get(['timeSpent', 'restUntil', 'mode', 'customAllowanceMin', 'customRestMin'], (result) => {
     timeSpent = asNumber(result.timeSpent);
     restUntil = asNumber(result.restUntil);
-    mode = MODES[result.mode] ? result.mode : 'standard';
+    mode = validMode(result.mode);
+    customLimits = {
+      allowance: minutesToSeconds(result.customAllowanceMin, 30),
+      restTime: minutesToSeconds(result.customRestMin, 10)
+    };
     resolve();
   });
 });
 
-// This worker is the only writer of timeSpent/restUntil, so only mode (written
-// by the options page) needs syncing back in.
+// This worker is the only writer of timeSpent/restUntil, so only the settings
+// written by the options page need syncing back in.
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (changes.mode) mode = MODES[changes.mode.newValue] ? changes.mode.newValue : 'standard';
+  if (changes.mode) mode = validMode(changes.mode.newValue);
+  if (changes.customAllowanceMin) customLimits.allowance = minutesToSeconds(changes.customAllowanceMin.newValue, 30);
+  if (changes.customRestMin) customLimits.restTime = minutesToSeconds(changes.customRestMin.newValue, 10);
 });
 
 // Persisting every counted second would mean one disk write per second of
@@ -129,7 +148,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 function triggerRest() {
   console.log('Shared allowance reached! Showing overlay.');
 
-  const restTime = MODES[mode].restTime;
+  const restTime = activeLimits().restTime;
   restUntil = Date.now() + restTime * 1000;
   timeSpent = 0;
   flushState(true);
@@ -156,7 +175,7 @@ async function handleVideoTick(sender) {
   if (now - lastTickMs >= 900) { // several tabs may tick in the same second
     lastTickMs = now;
     timeSpent += 1;
-    if (timeSpent >= MODES[mode].allowance) {
+    if (timeSpent >= activeLimits().allowance) {
       triggerRest();
     } else {
       flushState();
@@ -195,7 +214,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const remainingMs = restUntil - Date.now();
       sendResponse({
         timeSpent,
-        allowance: MODES[mode].allowance,
+        allowance: activeLimits().allowance,
         restRemainingMs: Math.max(remainingMs, 0),
         mode
       });
